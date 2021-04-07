@@ -1,45 +1,70 @@
 pragma solidity ^0.5.7;
 pragma experimental ABIEncoderV2;
-import '@studydefi/money-legos/dydx/contracts/Dydx/DydxFlashLoanBase.col';
-import '@studydefi/money-legos/dydx/contracts/ICallee.sol';
-import '@openzeppelin/contracts/tokens/ERC20/IERC20.sol';
 
-contract YieldFarmer is ICallee, DydxFlashLoanBase{
+import "@studydefi/money-legos/dydx/contracts/DydxFlashloanBase.sol";
+import "@studydefi/money-legos/dydx/contracts/ICallee.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import './Compound.sol';
 
-
-  enum{Deposit, Withdraw}
-
-  struct operation{
+contract YieldFarmer is ICallee, DydxFlashloanBase, Compound {
+  enum Direction { Deposit, Withdraw } 
+  struct Operation {
     address token;
-    address cToken
+    address cToken;
     Direction direction;
     uint amountProvided;
     uint amountBorrowed;
   }
-
-    address public owner;
-
-    constructor()public{
-        owner= msg.sender;
-    }
+  address public owner;
 
 
-function openPosition(
-  address _solo,
-  address _token,
-  address _cToken,
-  uint _amountProvided,
-  uint _amountBorrowed
-)external {
-  require(msg.sender==Only,'Only owner');
-  _initateFlashLoan(_solo, token, cToken, Direction.deposit, _amountProvided-2, _amountBorrowed);
-}
+  constructor(address _comptroller) Compound(_comptroller) public {
+    owner = msg.sender;
+  }
 
-      function callFunction(address sender, Account.Info memory account,bytes memory data)     
-  
-  public {
+  function openPosition(
+    address _solo, 
+    address _token, 
+    address _cToken,
+    uint _amountProvided, 
+    uint _amountBorrowed
+  ) external {
+    require(msg.sender == owner, 'only owner');
+    IERC20(_token).transferFrom(msg.sender, address(this), _amountProvided);
+    //2 wei is used to pay for flashloan
+    _initiateFlashloan(_solo, _token, _cToken, Direction.Deposit, _amountProvided - 2, _amountBorrowed);
+  }
+
+  function closePosition(
+    address _solo, 
+    address _token, 
+    address _cToken
+  ) external {
+    require(msg.sender == owner, 'only owner');
+    //2 wei is used to pay for flashloan
+    IERC20(_token).transferFrom(msg.sender, address(this), 2);
+    claimComp();
+    uint borrowBalance = getBorrowBalance(_cToken);
+    _initiateFlashloan(_solo, _token, _cToken, Direction.Withdraw, 0, borrowBalance);
+
+    //COMP
+    address compAddress = getCompAddress();
+    IERC20 comp = IERC20(compAddress);
+    uint compBalance = comp.balanceOf(address(this));
+    comp.transfer(msg.sender, compBalance);
+
+    //token
+    IERC20 token = IERC20(_token);
+    uint tokenBalance = token.balanceOf(address(this));
+    token.transfer(msg.sender, tokenBalance);
+  }
+
+  function callFunction(
+    address sender,
+    Account.Info memory account,
+    bytes memory data
+  ) public {
     Operation memory operation = abi.decode(data, (Operation));
-
 
     if(operation.direction == Direction.Deposit) {
       supply(operation.cToken, operation.amountProvided + operation.amountBorrowed);
@@ -52,13 +77,13 @@ function openPosition(
     }
   }
 
-     function _initiateFlashloan(
-        address _solo, 
-        address _token, 
-        address _cToken, 
-        Direction _direction,
-        uint _amountProvided, 
-        uint _amountBorrowed
+  function _initiateFlashloan(
+    address _solo, 
+    address _token, 
+    address _cToken, 
+    Direction _direction,
+    uint _amountProvided, 
+    uint _amountBorrowed
   )
     internal
   {
